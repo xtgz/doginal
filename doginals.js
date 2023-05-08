@@ -153,12 +153,19 @@ async function walletSplit() {
     let wallet = JSON.parse(fs.readFileSync(WALLET_PATH))
 
     let balance = wallet.utxos.reduce((acc, curr) => acc + curr.satoshis, 0)
-    if (balance == 0) throw new Error('no funds to split')
+    if (balance == 0) throw new Error(`${wallet.address} no funds to split`)
+
+    let pervalue = Math.floor(balance / splits)
+    if (process.argv.length == 6) {
+        pervalue = parseInt(process.argv[5])
+    }
+
+    if (balance < splits * pervalue) throw new Error(`${wallet.address} no enough to split, ${balance} < ${splits} * ${pervalue}`)
 
     let tx = new Transaction()
     tx.from(wallet.utxos)
     for (let i = 0; i < splits - 1; i++) {
-        tx.to(wallet.address, Math.floor(balance / splits))
+        tx.to(wallet.address, pervalue)
     }
     tx.change(wallet.address)
     tx.sign(wallet.privkey)
