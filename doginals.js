@@ -50,7 +50,7 @@ async function wallet() {
     let subcmd = process.argv[3]
 
     if (subcmd == 'new') {
-        walletNew()
+        await walletNew()
     } else if (subcmd == 'sync') {
         await walletSync()
     } else if (subcmd == 'balance') {
@@ -65,13 +65,19 @@ async function wallet() {
 }
 
 
-function walletNew() {
-    if (!fs.existsSync(WALLET_PATH)) {
+async function walletNew() {
+    let wallet_path = WALLET_PATH
+    if (process.argv.length == 5) {
+        wallet_path =  "." + process.argv[4] + ".json"
+    }
+    console.log(`begin to create wallet ${wallet_path}`)
+
+    if (!fs.existsSync(wallet_path)) {
         const privateKey = new PrivateKey()
         const privkey = privateKey.toWIF()
         const address = privateKey.toAddress().toString()
         const json = { privkey, address, utxos: [] }
-        fs.writeFileSync(WALLET_PATH, JSON.stringify(json, 0, 2))
+        fs.writeFileSync(wallet_path, JSON.stringify(json, 0, 2))
         console.log('address', address)
     } else {
         throw new Error('wallet already exists')
@@ -100,7 +106,7 @@ async function walletSync() {
 
     let balance = wallet.utxos.reduce((acc, curr) => acc + curr.satoshis, 0)
 
-    console.log('balance', balance)
+    console.log(`${wallet.address} balance`, balance)
 }
 
 
