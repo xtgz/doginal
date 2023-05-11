@@ -205,7 +205,6 @@ async function broadcastAll(txs, retry) {
         console.log(`broadcasting tx ${i + 1} of ${txs.length}`)
 
         try {
-            throw new Error('hello')
             await broadcast(txs[i], retry)
         } catch (e) {
             console.log('broadcast failed', e)
@@ -216,7 +215,11 @@ async function broadcastAll(txs, retry) {
         }
     }
 
-    fs.deleteFileSync('pending-txs.json')
+    fs.exists('pending-txs.json', (exists) => {
+      if(exists) {
+        fs.unlinkSync('pending-txs.json')
+      }
+    });
 
     console.log('inscription txid:', txs[1].hash)
 }
