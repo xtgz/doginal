@@ -390,6 +390,7 @@ function inscribe(wallet, address, contentType, data) {
     tx.inputs[0].setScript(unlock)
 
     updateWallet(wallet, tx)
+    console.log(`inscription 调用前 tx._fee${tx._fee}`)
     txs.push(tx)
 
 
@@ -449,6 +450,8 @@ async function broadcast(tx, retry) {
         method: "sendrawtransaction",
         params: [tx.toString()]
     }
+
+    console.log(`broadcast 调用前 tx._fee${tx._fee}`)
 
     const options = {
         auth: {
