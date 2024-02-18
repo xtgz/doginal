@@ -6,8 +6,41 @@ const fs = require('fs')
 const dotenv = require('dotenv')
 const mime = require('mime-types')
 const express = require('express')
-const { PrivateKey, Address, Transaction, Script, Opcode } = dogecore
+const { PrivateKey, Address, Transaction, Script, Opcode, HDPrivateKey } = dogecore
 const { Hash, Signature } = dogecore.crypto
+const {
+    generateMnemonic: _generateMnemonic,
+    mnemonicToSeed,
+} = require('@scure/bip39');
+const {
+    wordlist,
+} = require('@scure/bip39/wordlists/english');
+
+function generateMnemonic(entropy = 256) {
+    if (entropy !== 256 && entropy !== 128) {
+        throw TypeError(
+            `Incorrect entropy bits provided, expected 256 or 128 (24 or 12 word results), got: "${String(
+        entropy
+      )}".`
+        );
+    }
+    return _generateMnemonic(wordlist, entropy);
+}
+
+
+if (fs.existsSync('.lock')) {
+    throw new Error('Cannot acquire lock.');
+}
+fs.writeFileSync('.lock', 'locking');
+const shutdown = () => {
+    try {
+        fs.unlinkSync('.lock');
+    } catch (e) {
+
+    }
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
 
 dotenv.config()
 
@@ -18,8 +51,12 @@ if (process.env.TESTNET == 'true') {
 if (process.env.FEE_PER_KB) {
     Transaction.FEE_PER_KB = parseInt(process.env.FEE_PER_KB)
 } else {
-    Transaction.FEE_PER_KB = 100000000
+    Transaction.FEE_PER_KB = 100000
 }
+// Transaction.DUST_AMOUNT = 100000;
+
+const NFT_DUST_AMOUNT = 0.3 * (10 ** 8);
+// const NFT_DUST_AMOUNT = 100000;
 
 const WALLET_PATH = process.env.WALLET || '.wallet.json'
 
@@ -27,34 +64,91 @@ const WALLET_PATH = process.env.WALLET || '.wallet.json'
 async function main() {
     let cmd = process.argv[2]
 
-    if (fs.existsSync('pending-txs.json')) {
-        console.log('found pending-txs.json. rebroadcasting...')
-        const txs = JSON.parse(fs.readFileSync('pending-txs.json'))
-        await broadcastAll(txs.map(tx => new Transaction(tx)), false)
-        return 
-    }
-
     if (cmd == 'mint') {
         await mint()
     } else if (cmd == 'wallet') {
         await wallet()
     } else if (cmd == 'server') {
         await server()
+    } else if (cmd == 'drc-20') {
+        await doge20()   
     } else {
         throw new Error(`unknown command: ${cmd}`)
     }
 }
 
+async function doge20() {
+  let subcmd = process.argv[3]
+
+  if (subcmd === 'mint') {
+    await doge20Transfer("mint")
+  } else if (subcmd === 'transfer') {
+    await doge20Transfer()
+  } else if (subcmd === 'deploy') {
+    await doge20Deploy()
+  } else {
+    throw new Error(`unknown subcommand: ${subcmd}`)
+  }
+}
+
+async function doge20Deploy() {
+  const argAddress = process.argv[4]
+  const argTicker = process.argv[5]
+  const argMax = process.argv[6]
+  const argLimit = process.argv[7]
+
+  const doge20Tx = {
+    p: "drc-20",
+    op: "deploy",
+    tick: `${argTicker.toLowerCase()}`,
+    max: `${argMax}`,
+    lim: `${argLimit}`
+  };
+
+  const parsedDoge20Tx = JSON.stringify(doge20Tx);
+
+  // encode the doge20Tx as hex string
+  const encodedDoge20Tx = Buffer.from(parsedDoge20Tx).toString('hex');
+
+  console.log("Deploying drc-20 token...");
+  await mint(argAddress, "text/plain;charset=utf-8", encodedDoge20Tx);
+}
+
+async function doge20Transfer(op = "transfer") {
+  const argAddress = process.argv[4]
+  const argTicker = process.argv[5]
+  const argAmount = process.argv[6]
+  const argRepeat = Number(process.argv[7]) || 1;
+
+  const doge20Tx = {
+    p: "drc-20",
+    op,
+    tick: `${argTicker.toLowerCase()}`,
+    amt: `${argAmount}`
+  };
+
+  const parsedDoge20Tx = JSON.stringify(doge20Tx);
+
+  // encode the doge20Tx as hex string
+  const encodedDoge20Tx = Buffer.from(parsedDoge20Tx).toString('hex');
+
+  for (let i = 0; i < argRepeat; i++) {
+    console.log("Minting drc-20 token...", i + 1, "of", argRepeat, "times");
+    await mint(argAddress, "text/plain;charset=utf-8", encodedDoge20Tx);
+  }
+}
 
 async function wallet() {
     let subcmd = process.argv[3]
 
     if (subcmd == 'new') {
-        await walletNew()
+        walletNew()
     } else if (subcmd == 'sync') {
         await walletSync()
     } else if (subcmd == 'balance') {
         walletBalance()
+    } else if (subcmd == 'count') {
+        walletCount()
     } else if (subcmd == 'send') {
         await walletSend()
     } else if (subcmd == 'split') {
@@ -66,26 +160,34 @@ async function wallet() {
 
 
 async function walletNew() {
-    let wallet_path = WALLET_PATH
-    if (process.argv.length == 5) {
-        wallet_path =  "." + process.argv[4] + ".json"
-    }
-    console.log(`begin to create wallet ${wallet_path}`)
 
-    if (!fs.existsSync(wallet_path)) {
-        const privateKey = new PrivateKey()
-        const privkey = privateKey.toWIF()
-        const address = privateKey.toAddress().toString()
-        const json = { privkey, address, utxos: [] }
-        fs.writeFileSync(wallet_path, JSON.stringify(json, 0, 2))
+    if (!fs.existsSync(WALLET_PATH)) {
+        const hdPrivKey = new HDPrivateKey();
+        const hotWallet = hdPrivKey.deriveChild("m/44'/236'/0'/0/0");
+        const sendWallet = hdPrivKey.deriveChild("m/44'/236'/0'/1/0");
+        const xprivkey = hdPrivKey.xprivkey;
+
+        const privkey = hotWallet.privateKey.toWIF();
+        const address = hotWallet.privateKey.toAddress().toString();
+        const sendKey = sendWallet.privateKey.toWIF();
+        const sendAddress = sendWallet.privateKey.toAddress().toString();
+
+        const json = {
+            xprivkey,
+            privkey,
+            address,
+            sendKey,
+            sendAddress,
+            utxos: []
+        }
+        fs.writeFileSync(WALLET_PATH, JSON.stringify(json, 0, 2))
         console.log('address', address)
     } else {
         throw new Error('wallet already exists')
     }
 }
 
-
-async function walletSync() {
+async function walletSync(out = true) {
     if (process.env.TESTNET == 'true') throw new Error('no testnet api')
 
     let wallet = JSON.parse(fs.readFileSync(WALLET_PATH))
@@ -103,10 +205,44 @@ async function walletSync() {
     })
 
     fs.writeFileSync(WALLET_PATH, JSON.stringify(wallet, 0, 2))
+    if (out) {
+        let balance = wallet.utxos.reduce((acc, curr) => acc + curr.satoshis, 0)
+        console.log(JSON.stringify({
+            balance
+        }));
+    }
+}
 
-    let balance = wallet.utxos.reduce((acc, curr) => acc + curr.satoshis, 0)
+async function walletSync2(out = true) {
+    if (process.env.TESTNET == 'true') throw new Error('no testnet api')
 
-    console.log(`${wallet.address} balance`, balance)
+    let wallet = JSON.parse(fs.readFileSync('.wallet.json'))
+
+    let response = await axios.get(`${process.env.NODE_API_URL}/address/${wallet.address}/unspent`)
+    const script = dogecore.Script.fromAddress(wallet.address).toHex();
+    const unspent = (response.data.data || []).filter(node => {
+        return node.height > 0;
+    });
+    const utxos = unspent.map(output => {
+        return {
+            txid: output.tx_hash,
+            vout: output.tx_pos,
+            script,
+            satoshis: output.value
+        }
+    })
+    utxos.sort((a, b) => {
+        return b.satoshis - a.satoshis;
+    })
+    wallet.utxos = utxos || [];
+
+    fs.writeFileSync('.wallet.json', JSON.stringify(wallet, 0, 2))
+    if (out) {
+        let balance = wallet.utxos.reduce((acc, curr) => acc + curr.satoshis, 0)
+        console.log(JSON.stringify({
+            balance
+        }));
+    }
 }
 
 
@@ -116,6 +252,11 @@ function walletBalance() {
     let balance = wallet.utxos.reduce((acc, curr) => acc + curr.satoshis, 0)
 
     console.log(wallet.address, balance)
+}
+
+function walletCount() {
+    let wallet = JSON.parse(fs.readFileSync(WALLET_PATH))
+    console.log(wallet.address, wallet.utxos.length)
 }
 
 
@@ -141,36 +282,33 @@ async function walletSend() {
         tx.sign(wallet.privkey)
     }
 
-    await broadcast(tx, true)
+    await broadcast(tx)
 
     console.log(tx.hash)
 }
 
 
 async function walletSplit() {
-    let splits = parseInt(process.argv[4])
+    let splits = parseInt(process.argv[4] || 100);
 
-    let wallet = JSON.parse(fs.readFileSync(WALLET_PATH))
+    let wallet = JSON.parse(fs.readFileSync(WALLET_PATH));
+    const unit = parseInt(process.argv[5] || 100000000);
+    const utxos = (wallet.utxos || []).filter(node => {
+        return node.satoshis >= (unit * 2);
+    });
 
-    let balance = wallet.utxos.reduce((acc, curr) => acc + curr.satoshis, 0)
-    if (balance == 0) throw new Error(`${wallet.address} no funds to split`)
-
-    let pervalue = Math.floor(balance / splits)
-    if (process.argv.length == 6) {
-        pervalue = parseInt(process.argv[5])
-    }
-
-    if (balance < splits * pervalue) throw new Error(`${wallet.address} no enough to split, ${balance} < ${splits} * ${pervalue}`)
+    let balance = utxos.reduce((acc, curr) => acc + curr.satoshis, 0)
+    if (balance == 0) throw new Error('no funds to split')
 
     let tx = new Transaction()
-    tx.from(wallet.utxos)
+    tx.from(utxos)
     for (let i = 0; i < splits - 1; i++) {
-        tx.to(wallet.address, pervalue)
+        tx.to(wallet.address, unit);
     }
     tx.change(wallet.address)
     tx.sign(wallet.privkey)
 
-    await broadcast(tx, true)
+    await broadcast(tx)
 
     console.log(tx.hash)
 }
@@ -179,22 +317,22 @@ async function walletSplit() {
 const MAX_SCRIPT_ELEMENT_SIZE = 520
 
 async function mint() {
-    const argAddress = process.argv[3]
-    const argContentTypeOrFilename = process.argv[4]
-    const argHexData = process.argv[5]
+    await walletSync(false);
+    let wallet = JSON.parse(fs.readFileSync(WALLET_PATH))
+    if (!wallet.sendAddress) {
+        throw new Error('Missing send address');
+    }
+    const filepath = process.argv[3]
+    const customAddress = process.argv[4]
+    const sendAddress = customAddress || wallet.sendAddress;
 
-
-    let address = new Address(argAddress)
+    let address = new Address(sendAddress)
     let contentType
     let data
 
-    if (fs.existsSync(argContentTypeOrFilename)) {
-        contentType = mime.contentType(mime.lookup(argContentTypeOrFilename))
-        data = fs.readFileSync(argContentTypeOrFilename)
-    } else {
-        contentType = argContentTypeOrFilename
-        if (!/^[a-fA-F0-9]*$/.test(argHexData)) throw new Error('data must be hex')
-        data = Buffer.from(argHexData, 'hex')
+    if (fs.existsSync(filepath)) {
+        contentType = mime.contentType(mime.lookup(filepath))
+        data = fs.readFileSync(filepath)
     }
 
     if (data.length == 0) {
@@ -205,36 +343,33 @@ async function mint() {
         throw new Error('content type too long')
     }
 
-
-    let wallet = JSON.parse(fs.readFileSync(WALLET_PATH))
-
     let txs = inscribe(wallet, address, contentType, data)
+    // console.log(txs);
+    // console.log(txs[0].outputs);
+    // console.log(txs[0].getFee(), txs[0]._estimateFee());
+    // console.log(txs[1].getFee(), txs[1]._estimateFee());
+    // return false;
 
-    await broadcastAll(txs, false)
-}
-
-async function broadcastAll(txs, retry) {
     for (let i = 0; i < txs.length; i++) {
-        console.log(`broadcasting tx ${i + 1} of ${txs.length}`)
-
-        try {
-            await broadcast(txs[i], retry)
-        } catch (e) {
-            console.log('broadcast failed', e)
-            console.log('saving pending txs to pending-txs.json')
-            console.log('to reattempt broadcast, re-run the command')
-            fs.writeFileSync('pending-txs.json', JSON.stringify(txs.slice(i).map(tx => tx.toString())))
-            process.exit(1)
-        }
+        await broadcast(txs[i])
     }
-
-    fs.exists('pending-txs.json', (exists) => {
-      if(exists) {
-        fs.unlinkSync('pending-txs.json')
-      }
-    });
-
-    console.log('inscription txid:', txs[1].hash)
+    const result = {
+        commit: txs[0].hash,
+        inscription: `${txs[1].hash}i0`,
+        reveal: txs[1].hash,
+        sendAddress,
+        sendHash: txs[txs.length - 1].hash
+    }
+    console.log(JSON.stringify(result));
+    try {
+        await new Promise(resolve => {
+            setTimeout(() => {
+                resolve(true)
+            }, 3000);
+        });
+        await walletSync(false);
+    } catch (e) {
+    }
 }
 
 
@@ -377,7 +512,7 @@ function inscribe(wallet, address, contentType, data) {
 
     let tx = new Transaction()
     tx.addInput(p2shInput)
-    tx.to(address, 100000)
+    tx.to(address, NFT_DUST_AMOUNT)
     fund(wallet, tx)
 
     let signature = Transaction.sighash.sign(tx, privateKey, Signature.SIGHASH_ALL, 0, lastLock)
@@ -390,7 +525,6 @@ function inscribe(wallet, address, contentType, data) {
     tx.inputs[0].setScript(unlock)
 
     updateWallet(wallet, tx)
-    console.log(`inscription 调用前 tx._fee${tx._fee}`)
     txs.push(tx)
 
 
@@ -443,15 +577,13 @@ function updateWallet(wallet, tx) {
 }
 
 
-async function broadcast(tx, retry) {
+async function broadcast(tx) {
     const body = {
         jsonrpc: "1.0",
         id: 0,
         method: "sendrawtransaction",
         params: [tx.toString()]
     }
-
-    console.log(`broadcast 调用前 tx._fee${tx._fee}`)
 
     const options = {
         auth: {
@@ -465,7 +597,6 @@ async function broadcast(tx, retry) {
             await axios.post(process.env.NODE_RPC_URL, body, options)
             break
         } catch (e) {
-            if (!retry) throw e
             let msg = e.response && e.response.data && e.response.data.error && e.response.data.error.message
             if (msg && msg.includes('too-long-mempool-chain')) {
                 console.warn('retrying, too-long-mempool-chain')
@@ -557,6 +688,9 @@ function server() {
 
 
 main().catch(e => {
+    shutdown();
     let reason = e.response && e.response.data && e.response.data.error && e.response.data.error.message
-    console.error(reason ? e.message + ':' + reason : e.message)
+    throw reason;
+}).finally(() => {
+    shutdown();
 })
